@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: ["main", "master"]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,3 +37,18 @@ jobs:
 
       - name: Build Debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Set release tag
+        if: github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'master')
+        run: echo "RELEASE_TAG=build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'master')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Android Debug Build ${{ env.RELEASE_TAG }}
+          body: |
+            Automated debug APK build for commit `${{ github.sha }}`.
+          files: app/build/outputs/apk/debug/app-debug.apk
+          prerelease: true
