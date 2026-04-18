@@ -2,39 +2,57 @@ package com.wuuee.imganalysis
 
 import android.Manifest
 import android.content.ContentUris
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.exifinterface.media.ExifInterface
+import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class FocalBucket(val label: String, val count: Int)
+private const val TOP_BUCKET_LIMIT = 5
+private const val MAX_THUMBNAILS_PER_BUCKET = 12
+private const val MAX_THUMBNAILS_IN_OTHER = 24
+
+data class FocalGroup(
+    val label: String,
+    val count: Int,
+    val thumbnails: List<Uri>,
+    val isOther: Boolean = false
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,7 +71,7 @@ private fun FocalAnalyzerApp() {
     var hasPermission by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var totalPhotos by remember { mutableStateOf(0) }
-    var focalStats by remember { mutableStateOf<List<FocalBucket>>(emptyList()) }
+    var focalStats by remember { mutableStateOf<List<FocalGroup>>(emptyList()) }
     var message by remember { mutableStateOf("请先授权读取相册权限。") }
 
     val launcher = rememberLauncherForActivityResult(
@@ -120,26 +138,58 @@ private fun FocalAnalyzerApp() {
 }
 
 @Composable
-private fun FocalStatsList(items: List<FocalBucket>) {
+private fun FocalStatsList(items: List<FocalGroup>) {
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(items) { item ->
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = item.label,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(text = item.count.toString(), style = MaterialTheme.typography.bodyLarge)
+        items(items, key = { it.label }) { item ->
+            var expanded by rememberSaveable(item.label) { mutableStateOf(false) }
+
+            Card {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "${item.label} (${item.count})",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        TextButton(onClick = { expanded = !expanded }) {
+                            Text(
+                                if (expanded) "收起" else if (item.isOther) "展开其他" else "展开"
+                            )
+                        }
+                    }
+
+                    if (expanded) {
+                        if (item.thumbnails.isEmpty()) {
+                            Text("暂无缩略图")
+                        } else {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(item.thumbnails) { uri ->
+                                    AsyncImage(
+                                        model = uri,
+                                        contentDescription = "缩略图",
+                                        modifier = Modifier
+                                            .size(88.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-private suspend fun ComponentActivity.scanFocalStats(): Triple<Int, List<FocalBucket>, Int> =
+private suspend fun ComponentActivity.scanFocalStats(): Triple<Int, List<FocalGroup>, Int> =
     withContext(Dispatchers.IO) {
         val projection = arrayOf(MediaStore.Images.Media._ID)
         val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val counts = linkedMapOf<String, Int>()
+        val thumbnails = linkedMapOf<String, MutableList<Uri>>()
         var total = 0
         var withFocal = 0
 
@@ -166,15 +216,48 @@ private suspend fun ComponentActivity.scanFocalStats(): Triple<Int, List<FocalBu
                 if (!bucket.isNullOrBlank()) {
                     withFocal += 1
                     counts[bucket] = (counts[bucket] ?: 0) + 1
+                    val bucketThumbs = thumbnails.getOrPut(bucket) { mutableListOf() }
+                    if (bucketThumbs.size < MAX_THUMBNAILS_PER_BUCKET) {
+                        bucketThumbs.add(imageUri)
+                    }
                 }
             }
         }
 
         val sorted = counts.entries
             .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-            .map { FocalBucket(it.key, it.value) }
 
-        Triple(total, sorted, withFocal)
+        val top = sorted.take(TOP_BUCKET_LIMIT).map {
+            FocalGroup(
+                label = it.key,
+                count = it.value,
+                thumbnails = thumbnails[it.key].orEmpty()
+            )
+        }
+
+        val rest = sorted.drop(TOP_BUCKET_LIMIT)
+        val groups = top.toMutableList()
+        if (rest.isNotEmpty()) {
+            val otherThumbs = mutableListOf<Uri>()
+            for (entry in rest) {
+                val each = thumbnails[entry.key].orEmpty()
+                for (uriItem in each) {
+                    if (otherThumbs.size >= MAX_THUMBNAILS_IN_OTHER) break
+                    otherThumbs.add(uriItem)
+                }
+                if (otherThumbs.size >= MAX_THUMBNAILS_IN_OTHER) break
+            }
+            groups.add(
+                FocalGroup(
+                    label = "其他",
+                    count = rest.sumOf { it.value },
+                    thumbnails = otherThumbs,
+                    isOther = true
+                )
+            )
+        }
+
+        Triple(total, groups, withFocal)
     }
 
 private fun parseFocalLength(raw: String?): String? {
@@ -192,4 +275,3 @@ private fun parseFocalLength(raw: String?): String? {
         "${number.toInt()}mm"
     }
 }
-
