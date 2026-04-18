@@ -10,16 +10,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -36,22 +40,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.exifinterface.media.ExifInterface
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 private const val TOP_BUCKET_LIMIT = 5
-private const val MAX_THUMBNAILS_PER_BUCKET = 12
-private const val MAX_THUMBNAILS_IN_OTHER = 24
 
 data class FocalGroup(
     val label: String,
     val count: Int,
     val thumbnails: List<Uri>,
-    val isOther: Boolean = false
+    val isOther: Boolean = false,
+    val otherBreakdown: List<Pair<String, Int>> = emptyList()
 )
 
 class MainActivity : ComponentActivity() {
@@ -139,7 +144,20 @@ private fun FocalAnalyzerApp() {
 
 @Composable
 private fun FocalStatsList(items: List<FocalGroup>) {
+    val sliceColors = listOf(
+        Color(0xFF4FC3F7),
+        Color(0xFF9575CD),
+        Color(0xFF4DB6AC),
+        Color(0xFFFFB74D),
+        Color(0xFFFF8A65),
+        Color(0xFF90A4AE)
+    )
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item(key = "pie-chart") {
+            PieChartCard(items = items, colors = sliceColors)
+        }
+
         items(items, key = { it.label }) { item ->
             var expanded by rememberSaveable(item.label) { mutableStateOf(false) }
 
@@ -162,22 +180,82 @@ private fun FocalStatsList(items: List<FocalGroup>) {
                     }
 
                     if (expanded) {
+                        if (item.isOther && item.otherBreakdown.isNotEmpty()) {
+                            Text(
+                                text = "其他内焦段：${
+                                    item.otherBreakdown.joinToString("，") { "${it.first}(${it.second})" }
+                                }",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+
                         if (item.thumbnails.isEmpty()) {
                             Text("暂无缩略图")
                         } else {
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(item.thumbnails) { uri ->
+                            LazyVerticalGrid(
+                                columns = GridCells.Adaptive(minSize = 96.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(280.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                gridItems(item.thumbnails, key = { it.toString() }) { uri ->
                                     AsyncImage(
                                         model = uri,
                                         contentDescription = "缩略图",
                                         modifier = Modifier
-                                            .size(88.dp)
+                                            .size(96.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                     )
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PieChartCard(items: List<FocalGroup>, colors: List<Color>) {
+    val total = items.sumOf { it.count }.coerceAtLeast(1)
+
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("焦段占比饼图", style = MaterialTheme.typography.titleMedium)
+
+            Canvas(
+                modifier = Modifier
+                    .size(210.dp)
+                    .padding(8.dp)
+            ) {
+                var startAngle = -90f
+                items.forEachIndexed { index, group ->
+                    val sweep = 360f * group.count.toFloat() / total.toFloat()
+                    drawArc(
+                        color = colors[index % colors.size],
+                        startAngle = startAngle,
+                        sweepAngle = sweep,
+                        useCenter = true
+                    )
+                    startAngle += sweep
+                }
+            }
+
+            items.forEachIndexed { index, group ->
+                val ratio = (group.count * 100f / total).roundToInt()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Canvas(modifier = Modifier.size(12.dp)) {
+                        drawCircle(color = colors[index % colors.size])
+                    }
+                    Text("${group.label}: ${group.count} (${ratio}%)")
                 }
             }
         }
@@ -216,10 +294,7 @@ private suspend fun ComponentActivity.scanFocalStats(): Triple<Int, List<FocalGr
                 if (!bucket.isNullOrBlank()) {
                     withFocal += 1
                     counts[bucket] = (counts[bucket] ?: 0) + 1
-                    val bucketThumbs = thumbnails.getOrPut(bucket) { mutableListOf() }
-                    if (bucketThumbs.size < MAX_THUMBNAILS_PER_BUCKET) {
-                        bucketThumbs.add(imageUri)
-                    }
+                    thumbnails.getOrPut(bucket) { mutableListOf() }.add(imageUri)
                 }
             }
         }
@@ -238,21 +313,14 @@ private suspend fun ComponentActivity.scanFocalStats(): Triple<Int, List<FocalGr
         val rest = sorted.drop(TOP_BUCKET_LIMIT)
         val groups = top.toMutableList()
         if (rest.isNotEmpty()) {
-            val otherThumbs = mutableListOf<Uri>()
-            for (entry in rest) {
-                val each = thumbnails[entry.key].orEmpty()
-                for (uriItem in each) {
-                    if (otherThumbs.size >= MAX_THUMBNAILS_IN_OTHER) break
-                    otherThumbs.add(uriItem)
-                }
-                if (otherThumbs.size >= MAX_THUMBNAILS_IN_OTHER) break
-            }
+            val otherThumbs = rest.flatMap { entry -> thumbnails[entry.key].orEmpty() }
             groups.add(
                 FocalGroup(
                     label = "其他",
                     count = rest.sumOf { it.value },
                     thumbnails = otherThumbs,
-                    isOther = true
+                    isOther = true,
+                    otherBreakdown = rest.map { it.key to it.value }
                 )
             )
         }
