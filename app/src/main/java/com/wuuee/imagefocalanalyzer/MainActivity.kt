@@ -1,4 +1,4 @@
-package com.wuuee.imganalysis
+package com.wuuee.imagefocalanalyzer
 
 import android.Manifest
 import android.content.ContentUris
