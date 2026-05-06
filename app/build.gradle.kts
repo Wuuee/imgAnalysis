@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.wuuee.imganalysis"
+    namespace = "com.wuuee.imagefocalanalyzer"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.wuuee.imganalysis"
+        applicationId = "com.wuuee.imagefocalanalyzer"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
