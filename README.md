@@ -1,6 +1,6 @@
 # ImageFocalAnalyzer
 
-![Build](https://github.com/Wuuee/imgAnalysis/actions/workflows/android-build.yml/badge.svg)
+![Build](https://github.com/Wuuee/ImageFocalAnalyzer/actions/workflows/android-build.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-Android-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
